@@ -1,6 +1,6 @@
 # bodhi
 
-Lightweight Javascript powered web framework. Inspired by [Jar](https://github.com/healeycodes/jar) and [Remix](https://github.com/remix-run/remix).
+Lightweight Javascript powered web framework. Inspired by [Jar](https://github.com/healeycodes/jar), [Remix](https://github.com/remix-run/remix) and [Pocketpages](https://github.com/benallfree/pocketpages).
 
 The core principle for bodhi is to reduce complexity as much as possible. Have a single executable that can be run without additional dependencies and complexities such such as PHP, NodeJS etc.
 
