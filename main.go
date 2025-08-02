@@ -21,23 +21,14 @@ type Request struct {
 }
 
 type Server struct {
-	rootDir  string
-	vm       *sobek.Runtime
-	template *template.Template
+	rootDir string
+	vm      *sobek.Runtime
 }
 
 func NewServer(rootDir string) *Server {
-	// Load the index.tmpl template
-	tmplPath := filepath.Join(rootDir, "index.tmpl")
-	tmpl, err := template.ParseFiles(tmplPath)
-	if err != nil {
-		log.Fatalf("Error loading template: %v", err)
-	}
-
 	return &Server{
-		rootDir:  rootDir,
-		vm:       sobek.New(),
-		template: tmpl,
+		rootDir: rootDir,
+		vm:      sobek.New(),
 	}
 }
 
@@ -47,27 +38,23 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		path = "/index"
 	}
 
-	// Remove leading slash and add .js extension
 	filename := strings.TrimPrefix(path, "/") + ".js"
-	filepath := filepath.Join(s.rootDir, filename)
+	pagePath := filepath.Join(s.rootDir, filename)
 
-	// Check if file exists
-	if _, err := os.Stat(filepath); os.IsNotExist(err) {
+	if _, err := os.Stat(pagePath); os.IsNotExist(err) {
 		http.NotFound(w, r)
 		return
 	}
 
-	// Read the JavaScript file
-	jsContent, err := os.ReadFile(filepath)
+	jsContent, err := os.ReadFile(pagePath)
 	if err != nil {
 		http.Error(w, "Error reading file", http.StatusInternalServerError)
 		return
 	}
 
-	// Create a new VM instance for this request
+	// TODO: create a pool of VMs for each page file or figure out a way to clear the vm
 	vm := sobek.New()
 
-	// Execute the JavaScript
 	_, jsErr := vm.RunString(string(jsContent))
 	if jsErr != nil {
 		http.Error(w, fmt.Sprintf("JavaScript error: %v", jsErr), http.StatusInternalServerError)
@@ -76,7 +63,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	var data any
 
-	// Check if loader function exists
+	// handle optional loader function, skip if not defined
 	loaderFunc := vm.Get("loader")
 	if loaderFunc != nil && !sobek.IsUndefined(loaderFunc) {
 		// Read request body
@@ -88,12 +75,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			Body:    string(body),
 		}
 
-		// Call loader function as callable
 		callable, ok := sobek.AssertFunction(loaderFunc)
 		if !ok {
 			http.Error(w, "loader is not a function", http.StatusInternalServerError)
 			return
 		}
+
 		result, loaderErr := callable(sobek.Undefined(), vm.ToValue(req))
 		if loaderErr != nil {
 			http.Error(w, fmt.Sprintf("Loader error: %v", loaderErr), http.StatusInternalServerError)
@@ -102,14 +89,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		data = result.Export()
 	}
 
-	// Get render function
 	renderFunc := vm.Get("render")
 	if renderFunc == nil || sobek.IsUndefined(renderFunc) {
 		http.Error(w, "render function not found", http.StatusInternalServerError)
 		return
 	}
 
-	// Call render function as callable
 	renderCallable, ok := sobek.AssertFunction(renderFunc)
 	if !ok {
 		http.Error(w, "render is not a function", http.StatusInternalServerError)
@@ -118,6 +103,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	var result sobek.Value
 	var renderErr error
+
 	if data != nil {
 		result, renderErr = renderCallable(sobek.Undefined(), vm.ToValue(data))
 	} else {
@@ -129,23 +115,56 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Render the template with the JavaScript render result as content
-	templateData := struct {
-		Content template.HTML
-	}{
-		Content: template.HTML(result.String()),
+	infos := listPages(s)
+
+	templateData := make(map[string]any)
+	templateData["pages"] = infos
+
+	tmpl, err := template.ParseFiles(filepath.Join(s.rootDir, "index.tmpl"))
+
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Template error: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	child := fmt.Sprintf(`{{define "content"}}%s{{end}}`, result.String())
+
+	_, err = tmpl.Parse(child)
+
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Page template error: %v", err), http.StatusInternalServerError)
+		return
 	}
 
 	w.Header().Set("Content-Type", "text/html")
-	err = s.template.Execute(w, templateData)
+	err = tmpl.Execute(w, templateData)
+
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Template error: %v", err), http.StatusInternalServerError)
 		return
 	}
 }
 
+// lists available pages in configured rootDir filtering out index.tmpl, index.js.
+// The pages can then be used from index.tmpl for creating navigation links
+func listPages(s *Server) []string {
+	entries, _ := os.ReadDir(s.rootDir)
+	infos := make([]string, 0, len(entries))
+
+	for _, entry := range entries {
+		info, _ := entry.Info()
+		name := info.Name()
+		if name == "index.tmpl" || name == "index.js" {
+			continue
+		}
+
+		infos = append(infos, strings.TrimSuffix(name, ".js"))
+	}
+	return infos
+}
+
 func main() {
-	rootDir := "."
+	rootDir := "./pages"
 	if len(os.Args) > 1 {
 		rootDir = os.Args[1]
 	}
